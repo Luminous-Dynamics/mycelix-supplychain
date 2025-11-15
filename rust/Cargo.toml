@@ -3,6 +3,7 @@ members = [
     "service",
     "claim-model",
     "crypto",
+    "cli",
 ]
 resolver = "2"
 

@@ -30,6 +30,21 @@ pub enum EventType {
     Certified,
 }
 
+impl std::str::FromStr for EventType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "PRODUCED" => Ok(EventType::Produced),
+            "TRANSFORMED" => Ok(EventType::Transformed),
+            "SHIPPED" => Ok(EventType::Shipped),
+            "RECEIVED" => Ok(EventType::Received),
+            "CERTIFIED" => Ok(EventType::Certified),
+            _ => Err(format!("Invalid event type: {}", s)),
+        }
+    }
+}
+
 /// Facility information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Facility {

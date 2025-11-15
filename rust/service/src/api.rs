@@ -116,10 +116,15 @@ pub async fn ingest_event(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    // Store the claim
-    let mut claims = state.claims.write().await;
-    claims.insert(result.claim.id.clone(), result.claim.clone());
-    drop(claims);
+    // Store the claim (use database if available, otherwise in-memory)
+    if let Some(ref db) = state.db {
+        db.store_claim(&result.claim)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to store claim: {}", e)))?;
+    } else {
+        let mut claims = state.claims.write().await;
+        claims.insert(result.claim.id.clone(), result.claim.clone());
+    }
 
     info!("Created claim: {}", result.claim.id);
 
@@ -136,16 +141,24 @@ pub async fn get_claim(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<ClaimResponse>, ApiError> {
-    let claims = state.claims.read().await;
-
-    let claim = claims
-        .get(&id)
-        .ok_or_else(|| ApiError::NotFound(format!("Claim {} not found", id)))?;
+    // Try database first, fallback to in-memory
+    let claim = if let Some(ref db) = state.db {
+        db.get_claim(&id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
+            .ok_or_else(|| ApiError::NotFound(format!("Claim {} not found", id)))?
+    } else {
+        let claims = state.claims.read().await;
+        claims
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("Claim {} not found", id)))?
+    };
 
     // TODO: Build lineage tree by following previous_claims
 
     Ok(Json(ClaimResponse {
-        claim: claim.clone(),
+        claim,
         lineage: None,
     }))
 }

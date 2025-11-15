@@ -49,6 +49,11 @@ impl KeyPair {
         format!("did:key:{}", hex::encode(public_key_bytes))
     }
 
+    /// Get the secret key bytes (seed)
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
+    }
+
     /// Sign a message
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.signing_key.sign(message)

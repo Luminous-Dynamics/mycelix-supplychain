@@ -3,6 +3,7 @@
 //! REST API for ingesting supply chain events and creating verifiable claims.
 
 mod api;
+mod db;
 mod dkg_client;
 mod lineage;
 mod pipeline;
@@ -21,7 +22,9 @@ use tracing_subscriber;
 /// Application state shared across handlers
 pub struct AppState {
     keypair: crypto::KeyPair,
-    // In-memory claim storage (replace with database in production)
+    // Database for persistent storage
+    db: Option<db::Database>,
+    // Fallback in-memory storage for development/testing
     claims: tokio::sync::RwLock<std::collections::HashMap<String, claim_model::DkgClaim>>,
 }
 
@@ -40,9 +43,28 @@ async fn main() -> Result<()> {
     let keypair = crypto::KeyPair::generate();
     info!("Service DID: {}", keypair.did());
 
+    // Initialize database if DATABASE_URL is set
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "sqlite://data/claims.db".to_string());
+
+    let db = match db::Database::new(&database_url).await {
+        Ok(database) => {
+            info!("Using SQLite database for storage");
+            Some(database)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to initialize database: {}. Falling back to in-memory storage",
+                e
+            );
+            None
+        }
+    };
+
     // Create app state
     let state = Arc::new(AppState {
         keypair,
+        db,
         claims: tokio::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
