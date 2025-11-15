@@ -10,7 +10,7 @@ use axum::{
 use claim_model::{DkgClaim, SupplyEventVC};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::info;
 
 /// Health check response
 #[derive(Serialize)]
@@ -83,7 +83,7 @@ impl IntoResponse for ApiError {
 }
 
 #[derive(Debug)]
-enum ApiError {
+pub enum ApiError {
     ValidationError(String),
     NotFound(String),
     Internal(String),

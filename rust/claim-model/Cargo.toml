@@ -13,5 +13,6 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 jsonschema = { workspace = true }
 uuid = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]

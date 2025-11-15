@@ -106,11 +106,11 @@ pub fn create_vc_jwt(keypair: &KeyPair, vc: &serde_json::Value) -> Result<String
     let header = JwtHeader::default();
     let header_json = serde_json::to_string(&header)
         .map_err(|e| CryptoError::SigningError(e.to_string()))?;
-    let header_b64 = base64_url::encode(&header_json);
+    let header_b64 = base64_url::encode(header_json.as_bytes());
 
     let payload_json =
         serde_json::to_string(vc).map_err(|e| CryptoError::SigningError(e.to_string()))?;
-    let payload_b64 = base64_url::encode(&payload_json);
+    let payload_b64 = base64_url::encode(payload_json.as_bytes());
 
     keypair.sign_jwt(&header_b64, &payload_b64)
 }
@@ -139,6 +139,28 @@ mod tests {
         let did = keypair.did();
 
         assert!(did.starts_with("did:key:"));
+        assert_eq!(did.len(), 72); // did:key: prefix + 64 hex chars
+    }
+
+    #[test]
+    fn test_keypair_from_seed() {
+        let seed = [42u8; 32];
+        let keypair1 = KeyPair::from_seed(&seed);
+        let keypair2 = KeyPair::from_seed(&seed);
+
+        // Same seed should produce same DID
+        assert_eq!(keypair1.did(), keypair2.did());
+    }
+
+    #[test]
+    fn test_keypair_different_seeds() {
+        let seed1 = [1u8; 32];
+        let seed2 = [2u8; 32];
+        let keypair1 = KeyPair::from_seed(&seed1);
+        let keypair2 = KeyPair::from_seed(&seed2);
+
+        // Different seeds should produce different DIDs
+        assert_ne!(keypair1.did(), keypair2.did());
     }
 
     #[test]
@@ -153,10 +175,88 @@ mod tests {
     }
 
     #[test]
-    fn test_hash() {
-        let data = b"test data";
-        let hash = hash_sha256(data);
+    fn test_verify_wrong_message_fails() {
+        let keypair = KeyPair::generate();
+        let message = b"original message";
+        let wrong_message = b"tampered message";
 
-        assert_eq!(hash.len(), 64); // SHA-256 produces 64 hex characters
+        let signature = keypair.sign(message);
+        let result = verify_signature(&keypair.public_key(), wrong_message, &signature);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_wrong_key_fails() {
+        let keypair1 = KeyPair::generate();
+        let keypair2 = KeyPair::generate();
+        let message = b"test message";
+
+        let signature = keypair1.sign(message);
+        let result = verify_signature(&keypair2.public_key(), message, &signature);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hash_deterministic() {
+        let data = b"test data";
+        let hash1 = hash_sha256(data);
+        let hash2 = hash_sha256(data);
+
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 64); // SHA-256 produces 64 hex characters
+    }
+
+    #[test]
+    fn test_hash_different_inputs() {
+        let data1 = b"test data 1";
+        let data2 = b"test data 2";
+        let hash1 = hash_sha256(data1);
+        let hash2 = hash_sha256(data2);
+
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_create_vc_jwt() {
+        let keypair = KeyPair::generate();
+        let vc = serde_json::json!({
+            "@context": ["https://www.w3.org/2018/credentials/v1"],
+            "type": ["VerifiableCredential"],
+            "issuer": keypair.did(),
+            "credentialSubject": {
+                "test": "data"
+            }
+        });
+
+        let jwt = create_vc_jwt(&keypair, &vc).unwrap();
+
+        // JWT should have 3 parts separated by dots
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3);
+
+        // Each part should be base64url encoded
+        assert!(!parts[0].is_empty());
+        assert!(!parts[1].is_empty());
+        assert!(!parts[2].is_empty());
+    }
+
+    #[test]
+    fn test_jwt_header() {
+        let header = JwtHeader::default();
+        assert_eq!(header.alg, "EdDSA");
+        assert_eq!(header.typ, "JWT");
+    }
+
+    #[test]
+    fn test_base64url_encode_decode() {
+        let data = b"hello world";
+        let encoded = base64_url::encode(data);
+        let decoded = base64_url::decode(&encoded).unwrap();
+
+        assert_eq!(data, decoded.as_slice());
+        // base64url should not contain = padding
+        assert!(!encoded.contains('='));
     }
 }

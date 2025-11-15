@@ -285,20 +285,20 @@ impl DkgClaim {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
-    #[test]
-    fn test_vc_validation() {
-        let vc = SupplyEventVC {
+    fn create_valid_vc(event_type: EventType, prev_batch_ids: Option<Vec<String>>) -> SupplyEventVC {
+        SupplyEventVC {
             context: vec!["https://www.w3.org/2018/credentials/v1".to_string()],
             vc_type: vec!["VerifiableCredential".to_string()],
             issuer: "did:mycelix:org:test".to_string(),
             issuance_date: Utc::now(),
             expiration_date: None,
             credential_subject: CredentialSubject {
-                event_type: EventType::Produced,
+                event_type,
                 product_id: "SKU-001".to_string(),
                 batch_id: "BATCH-001".to_string(),
-                prev_batch_ids: None,
+                prev_batch_ids,
                 quantity: 100.0,
                 unit: "kg".to_string(),
                 facility: Facility {
@@ -312,8 +312,199 @@ mod tests {
                 metadata: None,
             },
             proof: None,
+        }
+    }
+
+    #[test]
+    fn test_vc_validation_produced() {
+        let vc = create_valid_vc(EventType::Produced, None);
+        assert!(vc.validate().is_ok());
+    }
+
+    #[test]
+    fn test_vc_validation_transformed_with_parents() {
+        let vc = create_valid_vc(EventType::Transformed, Some(vec!["BATCH-000".to_string()]));
+        assert!(vc.validate().is_ok());
+    }
+
+    #[test]
+    fn test_vc_validation_transformed_without_parents_fails() {
+        let vc = create_valid_vc(EventType::Transformed, None);
+        let result = vc.validate();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ValidationError::MissingField(_)));
+    }
+
+    #[test]
+    fn test_vc_validation_missing_context() {
+        let mut vc = create_valid_vc(EventType::Produced, None);
+        vc.context = vec!["https://example.com".to_string()];
+        let result = vc.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vc_validation_missing_vc_type() {
+        let mut vc = create_valid_vc(EventType::Produced, None);
+        vc.vc_type = vec!["SomeOtherType".to_string()];
+        let result = vc.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vc_validation_invalid_issuer() {
+        let mut vc = create_valid_vc(EventType::Produced, None);
+        vc.issuer = "not-a-did".to_string();
+        let result = vc.validate();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ValidationError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn test_vc_validation_negative_quantity() {
+        let mut vc = create_valid_vc(EventType::Produced, None);
+        vc.credential_subject.quantity = -10.0;
+        let result = vc.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vc_validation_zero_quantity() {
+        let mut vc = create_valid_vc(EventType::Produced, None);
+        vc.credential_subject.quantity = 0.0;
+        let result = vc.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_event_type_serialization() {
+        let produced = EventType::Produced;
+        let json = serde_json::to_string(&produced).unwrap();
+        assert_eq!(json, "\"PRODUCED\"");
+
+        let transformed = EventType::Transformed;
+        let json = serde_json::to_string(&transformed).unwrap();
+        assert_eq!(json, "\"TRANSFORMED\"");
+    }
+
+    #[test]
+    fn test_event_type_deserialization() {
+        let produced: EventType = serde_json::from_str("\"PRODUCED\"").unwrap();
+        assert_eq!(produced, EventType::Produced);
+
+        let shipped: EventType = serde_json::from_str("\"SHIPPED\"").unwrap();
+        assert_eq!(shipped, EventType::Shipped);
+    }
+
+    #[test]
+    fn test_dkg_claim_from_vc() {
+        let vc = create_valid_vc(EventType::Produced, None);
+        let vc_jwt = "mock.jwt.token".to_string();
+        let prev_claims = Some(vec!["claim-123".to_string()]);
+
+        let claim = DkgClaim::from_vc(&vc, vc_jwt.clone(), prev_claims.clone());
+
+        assert_eq!(claim.claim_type, "SupplyChainClaim");
+        assert_eq!(claim.issuer, vc.issuer);
+        assert_eq!(claim.subject.batch_id, vc.credential_subject.batch_id);
+        assert_eq!(claim.subject.product_id, vc.credential_subject.product_id);
+        assert_eq!(claim.assertion.event_type, EventType::Produced);
+        assert_eq!(claim.evidence.vc_jwt, vc_jwt);
+        assert_eq!(claim.lineage.previous_claims, prev_claims);
+        assert_eq!(claim.confidence, Some(1.0));
+        assert!(!claim.lineage.hash.is_empty());
+    }
+
+    #[test]
+    fn test_dkg_claim_lineage_hash_deterministic() {
+        let vc = create_valid_vc(EventType::Produced, None);
+        let vc_jwt = "mock.jwt.token".to_string();
+        let prev_claims = Some(vec!["claim-123".to_string()]);
+
+        let claim1 = DkgClaim::from_vc(&vc, vc_jwt.clone(), prev_claims.clone());
+        let claim2 = DkgClaim::from_vc(&vc, vc_jwt.clone(), prev_claims.clone());
+
+        // Same inputs should produce same lineage hash
+        assert_eq!(claim1.lineage.hash, claim2.lineage.hash);
+    }
+
+    #[test]
+    fn test_dkg_claim_lineage_hash_different() {
+        let vc = create_valid_vc(EventType::Produced, None);
+        let vc_jwt1 = "mock.jwt.token.1".to_string();
+        let vc_jwt2 = "mock.jwt.token.2".to_string();
+
+        let claim1 = DkgClaim::from_vc(&vc, vc_jwt1, None);
+        let claim2 = DkgClaim::from_vc(&vc, vc_jwt2, None);
+
+        // Different JWTs should produce different hashes
+        assert_ne!(claim1.lineage.hash, claim2.lineage.hash);
+    }
+
+    #[test]
+    fn test_facility_with_location() {
+        let facility = Facility {
+            id: "FAC-001".to_string(),
+            name: "Test Facility".to_string(),
+            location: Some(Location {
+                lat: Some(37.7749),
+                lon: Some(-122.4194),
+                address: Some("123 Main St".to_string()),
+                country: Some("US".to_string()),
+            }),
         };
 
-        assert!(vc.validate().is_ok());
+        let json = serde_json::to_string(&facility).unwrap();
+        let parsed: Facility = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.id, facility.id);
+        assert_eq!(parsed.location.as_ref().unwrap().lat, facility.location.as_ref().unwrap().lat);
+    }
+
+    #[test]
+    fn test_metadata_serialization() {
+        let mut metadata = HashMap::new();
+        metadata.insert("key1".to_string(), serde_json::json!("value1"));
+        metadata.insert("key2".to_string(), serde_json::json!(42));
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let parsed: HashMap<String, serde_json::Value> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.get("key1").unwrap(), "value1");
+        assert_eq!(parsed.get("key2").unwrap(), 42);
+    }
+
+    #[test]
+    fn test_shipment_serialization() {
+        let shipment = Shipment {
+            shipment_id: "SHIP-001".to_string(),
+            carrier: Some("ACME Logistics".to_string()),
+            tracking_number: Some("TRACK-123".to_string()),
+            origin: Some("FAC-A".to_string()),
+            destination: Some("WH-B".to_string()),
+        };
+
+        let json = serde_json::to_string(&shipment).unwrap();
+        let parsed: Shipment = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.shipment_id, shipment.shipment_id);
+        assert_eq!(parsed.carrier, shipment.carrier);
+    }
+
+    #[test]
+    fn test_certification_serialization() {
+        let cert = Certification {
+            cert_type: "ISO-9001".to_string(),
+            cert_body: "Test Org".to_string(),
+            cert_id: "CERT-001".to_string(),
+            valid_from: Utc::now(),
+            valid_until: Utc::now() + chrono::Duration::days(365),
+        };
+
+        let json = serde_json::to_string(&cert).unwrap();
+        let parsed: Certification = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.cert_type, cert.cert_type);
+        assert_eq!(parsed.cert_id, cert.cert_id);
     }
 }
