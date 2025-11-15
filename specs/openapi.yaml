@@ -1,0 +1,319 @@
+openapi: 3.0.3
+info:
+  title: Mycelix SupplyChain API
+  version: 0.1.0
+  description: |
+    Verifiable supply-chain provenance API. Convert ERP/IoT events into signed
+    DKG claims and portable VCs with lineage proofs.
+  contact:
+    name: Luminous Dynamics
+    url: https://github.com/Luminous-Dynamics/mycelix-supplychain
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://api.mycelix.example.com
+    description: Production (example)
+
+tags:
+  - name: events
+    description: Supply chain event ingestion
+  - name: claims
+    description: DKG claim resolution and lineage
+  - name: verification
+    description: VC and lineage verification
+  - name: health
+    description: Service health and status
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [health]
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  version:
+                    type: string
+                    example: 0.1.0
+
+  /v1/events:
+    post:
+      summary: Ingest a supply-chain event
+      tags: [events]
+      description: |
+        Submit a supply chain event (PRODUCED, TRANSFORMED, SHIPPED, RECEIVED, CERTIFIED).
+        The service will create a Verifiable Credential, sign it, create a DKG claim with
+        lineage links, and return the claim ID and VC.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupplyEvent'
+            examples:
+              produced:
+                summary: Batch produced
+                externalValue: './examples/batch_produced.json'
+              shipped:
+                summary: Shipment departed
+                externalValue: './examples/shipment_departed.json'
+      responses:
+        '201':
+          description: Event processed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [vc_jwt, claim_id, lineage_hash]
+                properties:
+                  vc_jwt:
+                    type: string
+                    description: Signed Verifiable Credential (JWT format)
+                  claim_id:
+                    type: string
+                    description: DKG claim identifier
+                  lineage_hash:
+                    type: string
+                    description: Hash linking to previous claims
+                  previous_claims:
+                    type: array
+                    items:
+                      type: string
+                    description: IDs of parent claims in lineage
+        '400':
+          description: Invalid event data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/claims/{id}:
+    get:
+      summary: Resolve DKG claim and lineage
+      tags: [claims]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Claim ID
+        - in: query
+          name: include_lineage
+          schema:
+            type: boolean
+            default: true
+          description: Include full lineage tree
+      responses:
+        '200':
+          description: Claim resolved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [claim, lineage]
+                properties:
+                  claim:
+                    $ref: '#/components/schemas/Claim'
+                  lineage:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Claim'
+                    description: Ancestor claims in chronological order
+        '404':
+          description: Claim not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/batches/{batchId}/lineage:
+    get:
+      summary: Get lineage for a batch
+      tags: [claims]
+      parameters:
+        - in: path
+          name: batchId
+          required: true
+          schema:
+            type: string
+          description: Batch ID
+      responses:
+        '200':
+          description: Lineage retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id:
+                    type: string
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Claim'
+
+  /v1/verify:
+    post:
+      summary: Verify VC signature and lineage
+      tags: [verification]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vc_jwt]
+              properties:
+                vc_jwt:
+                  type: string
+                  description: The VC JWT to verify
+                expected_product_id:
+                  type: string
+                  description: Optional product ID to validate against
+                check_lineage:
+                  type: boolean
+                  default: true
+                  description: Also verify lineage integrity
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid, signature_valid]
+                properties:
+                  valid:
+                    type: boolean
+                    description: Overall validity
+                  signature_valid:
+                    type: boolean
+                    description: Signature check result
+                  lineage_valid:
+                    type: boolean
+                    description: Lineage integrity check
+                  issuer:
+                    type: string
+                    description: DID of issuer
+                  errors:
+                    type: array
+                    items:
+                      type: string
+                    description: Validation errors if any
+
+components:
+  schemas:
+    SupplyEvent:
+      type: object
+      required: ['@context', 'type', 'issuer', 'issuanceDate', 'credentialSubject']
+      properties:
+        '@context':
+          type: array
+          items:
+            type: string
+          example: ['https://www.w3.org/2018/credentials/v1']
+        type:
+          type: array
+          items:
+            type: string
+          example: ['VerifiableCredential', 'SupplyChainEvent']
+        issuer:
+          type: string
+          description: DID of the issuer
+          example: 'did:mycelix:org:acme-corp'
+        issuanceDate:
+          type: string
+          format: date-time
+        credentialSubject:
+          type: object
+          required: [eventType, productId, batchId, quantity, unit, facility]
+          properties:
+            eventType:
+              type: string
+              enum: [PRODUCED, TRANSFORMED, SHIPPED, RECEIVED, CERTIFIED]
+            productId:
+              type: string
+              example: 'SKU-12345'
+            batchId:
+              type: string
+              example: 'BATCH-2025-001'
+            prevBatchIds:
+              type: array
+              items:
+                type: string
+              description: Parent batches (for TRANSFORMED events)
+            quantity:
+              type: number
+              example: 1000
+            unit:
+              type: string
+              example: 'kg'
+            facility:
+              type: object
+              required: [id, name]
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+                location:
+                  type: object
+                  properties:
+                    lat:
+                      type: number
+                    lon:
+                      type: number
+            timestamp:
+              type: string
+              format: date-time
+            metadata:
+              type: object
+              additionalProperties: true
+
+    Claim:
+      type: object
+      properties:
+        id:
+          type: string
+        vc_jwt:
+          type: string
+        lineage_hash:
+          type: string
+        previous_claims:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true

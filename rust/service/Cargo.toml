@@ -1,0 +1,38 @@
+[package]
+name = "service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "provenance-service"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace crates
+claim-model = { path = "../claim-model" }
+crypto = { path = "../crypto" }
+
+# Workspace dependencies
+tokio = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+config = { workspace = true }
+uuid = { workspace = true }
+
+# Additional dependencies
+dotenvy = "0.15"
+
+[dev-dependencies]
