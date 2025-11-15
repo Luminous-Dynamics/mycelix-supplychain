@@ -12,11 +12,28 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::info;
 
-/// Health check response
+/// Health check response with component status
 #[derive(Serialize)]
 pub struct HealthResponse {
     status: String,
     version: String,
+    timestamp: String,
+    components: ComponentsHealth,
+}
+
+/// Component health status
+#[derive(Serialize)]
+pub struct ComponentsHealth {
+    database: ComponentStatus,
+    storage: ComponentStatus,
+}
+
+/// Individual component status
+#[derive(Serialize)]
+pub struct ComponentStatus {
+    status: String, // "healthy", "degraded", "unhealthy"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 /// Event ingestion response
@@ -89,12 +106,63 @@ pub enum ApiError {
     Internal(String),
 }
 
-/// Health check endpoint
-pub async fn health() -> Json<HealthResponse> {
+/// Health check endpoint with component status
+pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
+    // Check database health
+    let database_status = if let Some(ref db) = state.db {
+        match db.health_check().await {
+            Ok(true) => ComponentStatus {
+                status: "healthy".to_string(),
+                message: Some("Database connected".to_string()),
+            },
+            _ => ComponentStatus {
+                status: "unhealthy".to_string(),
+                message: Some("Database connection failed".to_string()),
+            },
+        }
+    } else {
+        ComponentStatus {
+            status: "degraded".to_string(),
+            message: Some("Using in-memory storage".to_string()),
+        }
+    };
+
+    // Storage is always healthy (either DB or in-memory)
+    let storage_status = ComponentStatus {
+        status: "healthy".to_string(),
+        message: None,
+    };
+
+    // Overall status is degraded if any component is degraded/unhealthy
+    let overall_status = if database_status.status == "unhealthy" {
+        "unhealthy"
+    } else if database_status.status == "degraded" {
+        "degraded"
+    } else {
+        "healthy"
+    };
+
     Json(HealthResponse {
-        status: "ok".to_string(),
+        status: overall_status.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        components: ComponentsHealth {
+            database: database_status,
+            storage: storage_status,
+        },
     })
+}
+
+/// Prometheus metrics endpoint
+pub async fn metrics_endpoint() -> Response {
+    match crate::metrics::get_metrics() {
+        Ok(metrics) => (StatusCode::OK, metrics).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to gather metrics: {}", e),
+        )
+            .into_response(),
+    }
 }
 
 /// Ingest a supply chain event
@@ -127,6 +195,15 @@ pub async fn ingest_event(
     }
 
     info!("Created claim: {}", result.claim.id);
+
+    // Record metrics
+    let event_type = format!("{:?}", result.claim.assertion.event_type);
+    crate::metrics::record_event_ingested(&event_type);
+    crate::observability::log_claim_created(
+        &result.claim.id,
+        &event_type,
+        &result.claim.subject.batch_id,
+    );
 
     Ok(Json(EventResponse {
         vc_jwt: result.vc_jwt,

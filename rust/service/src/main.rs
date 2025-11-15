@@ -6,18 +6,20 @@ mod api;
 mod db;
 mod dkg_client;
 mod lineage;
+mod metrics;
+mod observability;
 mod pipeline;
 mod vc;
 
 use anyhow::Result;
 use axum::{
+    middleware,
     routing::{get, post},
     Router,
 };
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{info, Level};
-use tracing_subscriber;
+use tracing::info;
 
 /// Application state shared across handlers
 pub struct AppState {
@@ -30,14 +32,11 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_target(false)
-        .init();
-
     // Load config (for now, use defaults)
     dotenvy::dotenv().ok();
+
+    // Initialize structured logging
+    observability::init_tracing();
 
     // Generate keypair (in production, load from secure storage)
     let keypair = crypto::KeyPair::generate();
@@ -77,10 +76,12 @@ async fn main() -> Result<()> {
     // Build router
     let app = Router::new()
         .route("/health", get(api::health))
+        .route("/metrics", get(api::metrics_endpoint))
         .route("/v1/events", post(api::ingest_event))
         .route("/v1/claims/:id", get(api::get_claim))
         .route("/v1/verify", post(api::verify_vc))
         .layer(cors)
+        .layer(middleware::from_fn(observability::request_logging_middleware))
         .with_state(state);
 
     // Start server
