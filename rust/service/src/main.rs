@@ -3,12 +3,14 @@
 //! REST API for ingesting supply chain events and creating verifiable claims.
 
 mod api;
+mod batch;
 mod db;
 mod dkg_client;
 mod lineage;
 mod metrics;
 mod observability;
 mod pipeline;
+mod security;
 mod vc;
 
 use anyhow::Result;
@@ -78,9 +80,11 @@ async fn main() -> Result<()> {
         .route("/health", get(api::health))
         .route("/metrics", get(api::metrics_endpoint))
         .route("/v1/events", post(api::ingest_event))
+        .route("/v1/events/batch", post(batch::ingest_batch))
         .route("/v1/claims/:id", get(api::get_claim))
         .route("/v1/verify", post(api::verify_vc))
         .layer(cors)
+        .layer(middleware::from_fn(security::security_headers_middleware))
         .layer(middleware::from_fn(observability::request_logging_middleware))
         .with_state(state);
 
