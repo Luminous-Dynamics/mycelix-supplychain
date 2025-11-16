@@ -14,6 +14,7 @@ pub mod middleware;
 pub mod observability;
 pub mod pipeline;
 pub mod security;
+pub mod validation;
 pub mod vc;
 
 /// Application state shared across handlers

@@ -50,13 +50,42 @@ async fn main() -> Result<()> {
         claims: tokio::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
-    // Configure CORS
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // Configure CORS with environment-based origins
+    use axum::http::Method;
+    use std::time::Duration;
 
-    // Build router
+    let allowed_origins = std::env::var("ALLOWED_ORIGINS")
+        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:8080".to_string());
+
+    // Parse allowed origins
+    let origins: Vec<_> = allowed_origins
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+
+    let cors = if origins.is_empty() {
+        // Fallback to permissive CORS if no valid origins configured
+        tracing::warn!("No valid CORS origins configured, using permissive CORS (not recommended for production)");
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    } else {
+        // Strict CORS with specific origins
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderName::from_static("x-request-id"),
+            ])
+            .max_age(Duration::from_secs(3600))  // Cache preflight for 1 hour
+    };
+
+    // Build router with security-first middleware ordering
+    use tower_http::limit::RequestBodyLimitLayer;
+
     let app = Router::new()
         .route("/health", get(provenance_service::api::health))
         .route("/metrics", get(provenance_service::api::metrics_endpoint))
@@ -67,8 +96,9 @@ async fn main() -> Result<()> {
         .route("/v1/batches/:batch_id/claims", get(provenance_service::lineage_api::get_batch_claims))
         .route("/v1/lineage/:batch_id", get(provenance_service::lineage_api::get_lineage))
         .route("/v1/verify", post(provenance_service::api::verify_vc))
+        .layer(RequestBodyLimitLayer::new(2 * 1024 * 1024))  // 2MB max request size
         .layer(cors)
-        .layer(middleware::from_fn(provenance_service::security::security_headers_middleware))
+        .layer(middleware::from_fn(provenance_service::middleware::security_headers))
         .layer(middleware::from_fn(provenance_service::observability::request_logging_middleware))
         .with_state(state);
 
