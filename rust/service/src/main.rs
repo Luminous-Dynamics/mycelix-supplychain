@@ -21,6 +21,9 @@ async fn main() -> Result<()> {
     // Initialize structured logging
     provenance_service::observability::init_tracing();
 
+    // Initialize health tracking
+    provenance_service::health::init();
+
     // Generate keypair (in production, load from secure storage)
     let keypair = crypto::KeyPair::generate();
     info!("Service DID: {}", keypair.did());
@@ -83,11 +86,23 @@ async fn main() -> Result<()> {
             .max_age(Duration::from_secs(3600))  // Cache preflight for 1 hour
     };
 
+    // Create rate limiter from environment
+    let rate_limit_config = provenance_service::middleware::RateLimitConfig::from_env();
+    let rate_limiter = provenance_service::middleware::create_rate_limiter(rate_limit_config.clone());
+
+    info!(
+        "Rate limiting: {} req/s (burst: {})",
+        rate_limit_config.requests_per_second,
+        rate_limit_config.burst_size
+    );
+
     // Build router with security-first middleware ordering
     use tower_http::limit::RequestBodyLimitLayer;
 
     let app = Router::new()
-        .route("/health", get(provenance_service::api::health))
+        .route("/health", get(provenance_service::health::health))
+        .route("/health/live", get(provenance_service::health::liveness))
+        .route("/health/ready", get(provenance_service::health::readiness))
         .route("/metrics", get(provenance_service::api::metrics_endpoint))
         .route("/v1/events", post(provenance_service::api::ingest_event))
         .route("/v1/events/batch", post(provenance_service::batch::ingest_batch))
@@ -100,14 +115,59 @@ async fn main() -> Result<()> {
         .layer(cors)
         .layer(middleware::from_fn(provenance_service::middleware::security_headers))
         .layer(middleware::from_fn(provenance_service::observability::request_logging_middleware))
-        .with_state(state);
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            rate_limiter,
+            provenance_service::middleware::rate_limit_middleware
+        ));
 
     // Start server
     let addr = "0.0.0.0:8080";
     info!("Starting server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
 
+    // Enable graceful shutdown
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    info!("Server shutdown complete");
     Ok(())
+}
+
+/// Graceful shutdown handler
+///
+/// Listens for SIGTERM (Kubernetes) and SIGINT (Ctrl+C) signals.
+/// Allows in-flight requests to complete before shutdown.
+async fn shutdown_signal() {
+    use tokio::signal;
+
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("Received SIGINT (Ctrl+C), starting graceful shutdown");
+        },
+        _ = terminate => {
+            tracing::info!("Received SIGTERM, starting graceful shutdown");
+        },
+    }
+
+    tracing::info!("Graceful shutdown initiated - finishing in-flight requests");
 }

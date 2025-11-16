@@ -4,8 +4,10 @@
 
 pub mod api;
 pub mod batch;
+pub mod config;
 pub mod db;
 pub mod dkg_client;
+pub mod health;
 pub mod lineage;
 pub mod lineage_api;
 pub mod logging;
