@@ -25,7 +25,7 @@ pub struct BatchClaimsResponse {
     pub claims: Vec<DkgClaim>,
 
     /// Total number of claims
-    pub total: usize,
+    pub total_claims: usize,
 
     /// Timestamp of query
     pub timestamp: String,
@@ -180,7 +180,7 @@ pub async fn get_batch_claims(
     Ok(Json(BatchClaimsResponse {
         batch_id,
         claims,
-        total,
+        total_claims: total,
         timestamp: chrono::Utc::now().to_rfc3339(),
     }))
 }
@@ -208,11 +208,21 @@ pub async fn get_lineage(
             .collect()
     };
 
+    // Return empty lineage if no claims found (instead of 404)
     if claims.is_empty() {
-        return Err(ApiError::NotFound(format!(
-            "No claims found for batch {}",
-            batch_id
-        )));
+        debug!(
+            batch_id = %batch_id,
+            "No claims found for batch, returning empty lineage"
+        );
+
+        return Ok(Json(LineageResponse {
+            batch_id,
+            claims: vec![],
+            upstream: None,
+            downstream: None,
+            total_claims: 0,
+            depth: 0,
+        }));
     }
 
     // Find upstream batches (sources)
