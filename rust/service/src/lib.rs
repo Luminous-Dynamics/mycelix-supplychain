@@ -7,6 +7,7 @@ pub mod batch;
 pub mod db;
 pub mod dkg_client;
 pub mod lineage;
+pub mod lineage_api;
 pub mod metrics;
 pub mod observability;
 pub mod pipeline;

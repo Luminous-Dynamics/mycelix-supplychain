@@ -120,6 +120,32 @@ impl Database {
         Ok(claims)
     }
 
+    /// Alias for get_batch_claims for API consistency
+    pub async fn get_claims_by_batch(&self, batch_id: &str) -> Result<Vec<DkgClaim>> {
+        self.get_batch_claims(batch_id).await
+    }
+
+    /// Get all claims (for search/filter operations)
+    pub async fn get_all_claims(&self) -> Result<Vec<DkgClaim>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT claim_json FROM claims
+            ORDER BY timestamp DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut claims = Vec::new();
+        for row in rows {
+            let claim_json: String = row.try_get("claim_json")?;
+            let claim: DkgClaim = serde_json::from_str(&claim_json)?;
+            claims.push(claim);
+        }
+
+        Ok(claims)
+    }
+
     /// Get parent claims for a given claim ID
     pub async fn get_parent_claims(&self, claim_id: &str) -> Result<Vec<DkgClaim>> {
         let rows = sqlx::query(

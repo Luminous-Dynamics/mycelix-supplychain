@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: supplychain-postgres
+    environment:
+      POSTGRES_DB: supplychain
+      POSTGRES_USER: supplychain
+      POSTGRES_PASSWORD: dev_password_change_in_prod
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./rust/service/migrations:/docker-entrypoint-initdb.d/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supplychain"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - supplychain-network
+
+  # Supply Chain Service
+  service:
+    build:
+      context: ./rust
+      dockerfile: ../docker/Dockerfile.service
+    container_name: supplychain-service
+    environment:
+      DATABASE_URL: postgresql://supplychain:dev_password_change_in_prod@postgres:5432/supplychain
+      RUST_LOG: info,provenance_service=debug
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - supplychain-network
+    volumes:
+      - ./rust:/app:ro
+      - cargo_cache:/usr/local/cargo/registry
+      - target_cache:/app/target
+
+  # Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: supplychain-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - supplychain-network
+    depends_on:
+      - service
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: supplychain-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_INSTALL_PLUGINS: ""
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - supplychain-network
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  cargo_cache:
+    driver: local
+  target_cache:
+    driver: local
+
+networks:
+  supplychain-network:
+    driver: bridge

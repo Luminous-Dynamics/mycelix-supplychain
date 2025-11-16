@@ -89,6 +89,17 @@ pub static VALIDATION_ERRORS: Lazy<CounterVec> = Lazy::new(|| {
     .expect("Failed to register validation_errors metric")
 });
 
+/// Histogram for query result counts
+pub static QUERY_RESULTS_COUNT: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "supplychain_query_results_count",
+        "Number of results returned by queries",
+        &["query_type"],
+        vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]
+    )
+    .expect("Failed to register query_results_count metric")
+});
+
 /// Helper struct for timing operations
 pub struct MetricTimer {
     start: Instant,
