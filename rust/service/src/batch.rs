@@ -168,7 +168,7 @@ async fn process_single_event(
 pub async fn ingest_batch(
     State(state): State<Arc<AppState>>,
     Json(request): Json<BatchIngestRequest>,
-) -> Result<Json<BatchIngestResponse>, BatchError> {
+) -> Result<(StatusCode, Json<BatchIngestResponse>), BatchError> {
     let start_time = Instant::now();
     let total_events = request.events.len();
 
@@ -228,13 +228,16 @@ pub async fn ingest_batch(
         .with_label_values(&["POST", "/v1/events/batch", "201"])
         .observe(duration_ms as f64 / 1000.0);
 
-    Ok(Json(BatchIngestResponse {
-        total: total_events,
-        succeeded,
-        failed,
-        duration_ms,
-        results,
-    }))
+    Ok((
+        StatusCode::CREATED,
+        Json(BatchIngestResponse {
+            total: total_events,
+            succeeded,
+            failed,
+            duration_ms,
+            results,
+        }),
+    ))
 }
 
 /// Process events in best-effort mode (partial success allowed)

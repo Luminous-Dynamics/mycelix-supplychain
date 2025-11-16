@@ -2,35 +2,16 @@
 //!
 //! REST API for ingesting supply chain events and creating verifiable claims.
 
-mod api;
-mod batch;
-mod db;
-mod dkg_client;
-mod lineage;
-mod metrics;
-mod observability;
-mod pipeline;
-mod security;
-mod vc;
-
 use anyhow::Result;
 use axum::{
     middleware,
     routing::{get, post},
     Router,
 };
+use provenance_service::AppState;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
-
-/// Application state shared across handlers
-pub struct AppState {
-    keypair: crypto::KeyPair,
-    // Database for persistent storage
-    db: Option<db::Database>,
-    // Fallback in-memory storage for development/testing
-    claims: tokio::sync::RwLock<std::collections::HashMap<String, claim_model::DkgClaim>>,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -38,7 +19,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
     // Initialize structured logging
-    observability::init_tracing();
+    provenance_service::observability::init_tracing();
 
     // Generate keypair (in production, load from secure storage)
     let keypair = crypto::KeyPair::generate();
@@ -48,7 +29,7 @@ async fn main() -> Result<()> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "sqlite://data/claims.db".to_string());
 
-    let db = match db::Database::new(&database_url).await {
+    let db = match provenance_service::db::Database::new(&database_url).await {
         Ok(database) => {
             info!("Using SQLite database for storage");
             Some(database)
@@ -77,15 +58,15 @@ async fn main() -> Result<()> {
 
     // Build router
     let app = Router::new()
-        .route("/health", get(api::health))
-        .route("/metrics", get(api::metrics_endpoint))
-        .route("/v1/events", post(api::ingest_event))
-        .route("/v1/events/batch", post(batch::ingest_batch))
-        .route("/v1/claims/:id", get(api::get_claim))
-        .route("/v1/verify", post(api::verify_vc))
+        .route("/health", get(provenance_service::api::health))
+        .route("/metrics", get(provenance_service::api::metrics_endpoint))
+        .route("/v1/events", post(provenance_service::api::ingest_event))
+        .route("/v1/events/batch", post(provenance_service::batch::ingest_batch))
+        .route("/v1/claims/:id", get(provenance_service::api::get_claim))
+        .route("/v1/verify", post(provenance_service::api::verify_vc))
         .layer(cors)
-        .layer(middleware::from_fn(security::security_headers_middleware))
-        .layer(middleware::from_fn(observability::request_logging_middleware))
+        .layer(middleware::from_fn(provenance_service::security::security_headers_middleware))
+        .layer(middleware::from_fn(provenance_service::observability::request_logging_middleware))
         .with_state(state);
 
     // Start server
