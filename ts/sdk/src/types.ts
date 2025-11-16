@@ -126,3 +126,68 @@ export interface HealthResponse {
   status: string;
   version: string;
 }
+
+// Batch operation types
+export interface BatchRequest {
+  events: SupplyEventVC[];
+  mode?: 'best-effort' | 'atomic';
+}
+
+export interface BatchResult {
+  index: number;
+  status: 'success' | 'error';
+  claim_id?: string;
+  vc_jwt?: string;
+  lineage_hash?: string;
+  error?: string;
+}
+
+export interface BatchResponse {
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: BatchResult[];
+  duration_ms: number;
+}
+
+// Lineage query types
+export interface LineageBatch {
+  batch_id: string;
+  claim_count: number;
+  depth: number;
+}
+
+export interface LineageResponse {
+  batch_id: string;
+  claims: DkgClaim[];
+  upstream?: LineageBatch[];
+  downstream?: LineageBatch[];
+  total_claims: number;
+  depth: number;
+}
+
+export interface BatchClaimsResponse {
+  batch_id: string;
+  claims: DkgClaim[];
+  total_claims: number;
+}
+
+// Search and filter types
+export interface ClaimFilters {
+  product_id?: string;
+  batch_id?: string;
+  facility_id?: string;
+  event_type?: EventType;
+  from?: string; // ISO 8601
+  to?: string;   // ISO 8601
+  limit?: number;
+  offset?: number;
+}
+
+export interface SearchResponse {
+  claims: DkgClaim[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}

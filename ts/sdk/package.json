@@ -1,7 +1,7 @@
 {
   "name": "@mycelix/supplychain-sdk",
-  "version": "0.1.0",
-  "description": "TypeScript SDK for Mycelix Supply Chain Provenance API",
+  "version": "0.2.0",
+  "description": "TypeScript SDK for Mycelix Supply Chain Provenance API with batch and lineage support",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

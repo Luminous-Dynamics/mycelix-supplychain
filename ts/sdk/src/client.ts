@@ -10,6 +10,12 @@ import {
   VerifyRequest,
   VerifyResponse,
   HealthResponse,
+  BatchRequest,
+  BatchResponse,
+  LineageResponse,
+  BatchClaimsResponse,
+  ClaimFilters,
+  SearchResponse,
 } from './types';
 
 export interface ClientConfig {
@@ -173,5 +179,67 @@ export class SupplyChainClient {
         metadata: params.metadata,
       },
     };
+  }
+
+  /**
+   * Ingest multiple events in a batch
+   * @param request Batch request with events and processing mode
+   * @returns Batch processing results
+   */
+  async ingestBatch(request: BatchRequest): Promise<BatchResponse> {
+    const response = await this.client.post<BatchResponse>('/v1/events/batch', {
+      events: request.events,
+      mode: request.mode || 'best-effort',
+    });
+    return response.data;
+  }
+
+  /**
+   * Get all claims for a specific batch
+   * @param batchId Batch identifier
+   * @returns All claims for the batch
+   */
+  async getBatchClaims(batchId: string): Promise<BatchClaimsResponse> {
+    const response = await this.client.get<BatchClaimsResponse>(
+      `/v1/batches/${batchId}/claims`
+    );
+    return response.data;
+  }
+
+  /**
+   * Get complete lineage graph for a batch
+   * @param batchId Batch identifier
+   * @returns Lineage graph with upstream/downstream batches
+   */
+  async getLineage(batchId: string): Promise<LineageResponse> {
+    const response = await this.client.get<LineageResponse>(
+      `/v1/lineage/${batchId}`
+    );
+    return response.data;
+  }
+
+  /**
+   * Search and filter claims
+   * @param filters Search criteria (optional)
+   * @returns Paginated search results
+   */
+  async searchClaims(filters: ClaimFilters = {}): Promise<SearchResponse> {
+    const response = await this.client.get<SearchResponse>('/v1/claims', {
+      params: filters,
+    });
+    return response.data;
+  }
+
+  /**
+   * Helper: Create a batch request
+   * @param events Array of supply events
+   * @param mode Processing mode (default: best-effort)
+   * @returns Batch request object
+   */
+  createBatch(
+    events: SupplyEventVC[],
+    mode: 'best-effort' | 'atomic' = 'best-effort'
+  ): BatchRequest {
+    return { events, mode };
   }
 }
