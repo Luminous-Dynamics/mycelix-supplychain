@@ -1,0 +1,21 @@
+---
+# Mycelix Supply Chain hApp Bundle
+# Decentralized supply chain provenance tracking
+
+manifest_version: "0"
+name: supplychain
+description: |
+  A decentralized supply chain provenance tracking system with verifiable claims
+  and cross-hApp bridge capabilities.
+
+roles:
+  - name: supplychain
+    provisioning:
+      strategy: create
+      deferred: false
+    dna:
+      path: ./workdir/supplychain.dna
+      modifiers:
+        network_seed: ~
+        properties: ~
+      clone_limit: 0
