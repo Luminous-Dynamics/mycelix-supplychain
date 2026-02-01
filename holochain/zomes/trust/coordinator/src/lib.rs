@@ -8,15 +8,61 @@ fn ensure_path(path: Path, link_type: LinkTypes) -> ExternResult<EntryHash> {
     typed.path_entry_hash()
 }
 
+// ============================================================================
+// Review and Reputation Management
+// ============================================================================
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SubmitReviewInput {
+    pub subject: AgentPubKey,
+    pub po_hash: Option<ActionHash>,
+    pub category: ReputationCategory,
+    pub rating: u8,
+    pub comment: Option<String>,
+}
+
 #[hdk_extern]
-pub fn submit_review(review: Review) -> ExternResult<ActionHash> {
+pub fn submit_review(input: SubmitReviewInput) -> ExternResult<ActionHash> {
+    // Input validation
+    if input.rating > 5 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Rating must be 0-5".to_string()
+        )));
+    }
+    if let Some(ref comment) = input.comment {
+        if comment.len() > 1000 {
+            return Err(wasm_error!(WasmErrorInner::Guest(
+                "Comment cannot exceed 1000 characters".to_string()
+            )));
+        }
+    }
+
+    let reviewer = agent_info()?.agent_initial_pubkey;
+
+    // Cannot review yourself
+    if reviewer == input.subject {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Cannot review yourself".to_string()
+        )));
+    }
+
+    let review = Review {
+        subject: input.subject.clone(),
+        reviewer: reviewer.clone(),
+        po_hash: input.po_hash,
+        category: input.category.clone(),
+        rating: input.rating,
+        comment: input.comment,
+        created_at: sys_time()?,
+    };
+
     let action_hash = create_entry(EntryTypes::Review(review.clone()))?;
 
     let subject_path = Path::from(format!("reviews/{}", review.subject));
     let subject_hash = ensure_path(subject_path, LinkTypes::AgentToReviews)?;
     create_link(subject_hash, action_hash.clone(), LinkTypes::AgentToReviews, ())?;
 
-    let reviewer_path = Path::from(format!("reviewer/{}", review.reviewer));
+    let reviewer_path = Path::from(format!("reviewer/{}", reviewer));
     let reviewer_hash = ensure_path(reviewer_path, LinkTypes::ReviewerToReviews)?;
     create_link(reviewer_hash, action_hash.clone(), LinkTypes::ReviewerToReviews, ())?;
 
@@ -153,6 +199,13 @@ pub fn file_dispute(dispute: Dispute) -> ExternResult<ActionHash> {
 #[hdk_extern]
 pub fn resolve_dispute(input: (ActionHash, String)) -> ExternResult<ActionHash> {
     let (hash, resolution) = input;
+
+    if resolution.is_empty() || resolution.len() > 1000 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Resolution must be 1-1000 characters".to_string()
+        )));
+    }
+
     if let Some(record) = get(hash.clone(), GetOptions::default())? {
         if let Some(mut dispute) = record.entry().to_app_option::<Dispute>().map_err(|e| wasm_error!(e))? {
             dispute.resolution = Some(resolution);
@@ -161,4 +214,73 @@ pub fn resolve_dispute(input: (ActionHash, String)) -> ExternResult<ActionHash> 
         }
     }
     Err(wasm_error!(WasmErrorInner::Guest("Dispute not found".into())))
+}
+
+#[hdk_extern]
+pub fn get_provider_rating(agent: AgentPubKey) -> ExternResult<f64> {
+    // Get all reviews for the provider
+    let reviews = get_agent_reviews(agent)?;
+
+    if reviews.is_empty() {
+        return Ok(0.0);
+    }
+
+    let total: u32 = reviews.iter().map(|r| r.rating as u32).sum();
+    let average = total as f64 / reviews.len() as f64;
+
+    Ok(average)
+}
+
+#[hdk_extern]
+pub fn flag_provider(input: (AgentPubKey, String)) -> ExternResult<ActionHash> {
+    let (provider, reason) = input;
+
+    if reason.is_empty() || reason.len() > 500 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Reason must be 1-500 characters".to_string()
+        )));
+    }
+
+    let flagger = agent_info()?.agent_initial_pubkey;
+
+    // Create a low-rating review to flag the provider
+    let review = Review {
+        subject: provider,
+        reviewer: flagger,
+        po_hash: None,
+        category: ReputationCategory::Compliance,
+        rating: 0,
+        comment: Some(format!("FLAGGED: {}", reason)),
+        created_at: sys_time()?,
+    };
+
+    let action_hash = create_entry(EntryTypes::Review(review.clone()))?;
+
+    let subject_path = Path::from(format!("reviews/{}", review.subject));
+    let subject_hash = ensure_path(subject_path, LinkTypes::AgentToReviews)?;
+    create_link(subject_hash, action_hash.clone(), LinkTypes::AgentToReviews, ())?;
+
+    update_reputation_for_review(review)?;
+
+    Ok(action_hash)
+}
+
+#[hdk_extern]
+pub fn get_all_reputation_categories(agent: AgentPubKey) -> ExternResult<Vec<(ReputationCategory, u32)>> {
+    let categories = vec![
+        ReputationCategory::Reliability,
+        ReputationCategory::Quality,
+        ReputationCategory::Communication,
+        ReputationCategory::Timeliness,
+        ReputationCategory::Compliance,
+    ];
+
+    let mut scores = Vec::new();
+    for category in categories {
+        if let Some(score) = get_reputation((agent.clone(), category.clone()))? {
+            scores.push((category, score.score));
+        }
+    }
+
+    Ok(scores)
 }

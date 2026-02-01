@@ -8,16 +8,62 @@ fn ensure_path(path: Path, link_type: LinkTypes) -> ExternResult<EntryHash> {
     typed.path_entry_hash()
 }
 
-#[hdk_extern]
-pub fn create_payment(payment: Payment) -> ExternResult<ActionHash> {
-    let action_hash = create_entry(EntryTypes::Payment(payment.clone()))?;
-    create_link(payment.po_hash, action_hash.clone(), LinkTypes::PoToPayments, ())?;
+// ============================================================================
+// Payment Management
+// ============================================================================
 
-    let payer_path = Path::from(format!("payer/{}", payment.payer));
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CreatePaymentInput {
+    pub po_hash: ActionHash,
+    pub amount: u64,
+    pub currency: String,
+    pub method: PaymentMethod,
+    pub payee: AgentPubKey,
+    pub reference: String,
+}
+
+#[hdk_extern]
+pub fn create_payment(input: CreatePaymentInput) -> ExternResult<ActionHash> {
+    // Input validation
+    if input.amount == 0 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Payment amount must be greater than 0".to_string()
+        )));
+    }
+    if input.currency.is_empty() || input.currency.len() > 10 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Currency must be 1-10 characters".to_string()
+        )));
+    }
+    if input.reference.len() > 200 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Reference cannot exceed 200 characters".to_string()
+        )));
+    }
+
+    let payer = agent_info()?.agent_initial_pubkey;
+
+    let payment = Payment {
+        po_hash: input.po_hash.clone(),
+        amount: input.amount,
+        currency: input.currency,
+        method: input.method,
+        status: PaymentStatus::Pending,
+        payer: payer.clone(),
+        payee: input.payee.clone(),
+        reference: input.reference,
+        created_at: sys_time()?,
+        completed_at: None,
+    };
+
+    let action_hash = create_entry(EntryTypes::Payment(payment.clone()))?;
+    create_link(input.po_hash, action_hash.clone(), LinkTypes::PoToPayments, ())?;
+
+    let payer_path = Path::from(format!("payer/{}", payer));
     let payer_hash = ensure_path(payer_path, LinkTypes::PayerToPayments)?;
     create_link(payer_hash, action_hash.clone(), LinkTypes::PayerToPayments, ())?;
 
-    let payee_path = Path::from(format!("payee/{}", payment.payee));
+    let payee_path = Path::from(format!("payee/{}", input.payee));
     let payee_hash = ensure_path(payee_path, LinkTypes::PayeeToPayments)?;
     create_link(payee_hash, action_hash.clone(), LinkTypes::PayeeToPayments, ())?;
 
@@ -98,11 +144,53 @@ pub fn release_escrow(hash: ActionHash) -> ExternResult<ActionHash> {
 pub fn get_po_payments(po_hash: ActionHash) -> ExternResult<Vec<Payment>> {
     let filter = LinkTypeFilter::try_from(LinkTypes::PoToPayments)?;
     let links = get_links(LinkQuery::new(po_hash, filter), GetStrategy::default())?;
+
     let mut payments = Vec::new();
     for link in links {
         if let Some(hash) = link.target.into_action_hash() {
-            if let Some(payment) = get_payment(hash)? { payments.push(payment); }
+            if let Some(payment) = get_payment(hash)? {
+                payments.push(payment);
+            }
         }
     }
     Ok(payments)
+}
+
+#[hdk_extern]
+pub fn confirm_payment(hash: ActionHash) -> ExternResult<ActionHash> {
+    update_payment_status((hash, PaymentStatus::Completed))
+}
+
+#[hdk_extern]
+pub fn refund_payment(hash: ActionHash) -> ExternResult<ActionHash> {
+    update_payment_status((hash, PaymentStatus::Refunded))
+}
+
+#[hdk_extern]
+pub fn get_my_payments(_: ()) -> ExternResult<Vec<Payment>> {
+    let my_agent = agent_info()?.agent_initial_pubkey;
+    let payer_path = Path::from(format!("payer/{}", my_agent));
+    let typed = payer_path.typed(LinkTypes::PayerToPayments)?;
+    let filter = LinkTypeFilter::try_from(LinkTypes::PayerToPayments)?;
+    let links = get_links(LinkQuery::new(typed.path_entry_hash()?, filter), GetStrategy::default())?;
+
+    let mut payments = Vec::new();
+    for link in links {
+        if let Some(hash) = link.target.into_action_hash() {
+            if let Some(payment) = get_payment(hash)? {
+                payments.push(payment);
+            }
+        }
+    }
+    Ok(payments)
+}
+
+#[hdk_extern]
+pub fn get_po_total_paid(po_hash: ActionHash) -> ExternResult<u64> {
+    let payments = get_po_payments(po_hash)?;
+    let total: u64 = payments.iter()
+        .filter(|p| p.status == PaymentStatus::Completed)
+        .map(|p| p.amount)
+        .sum();
+    Ok(total)
 }

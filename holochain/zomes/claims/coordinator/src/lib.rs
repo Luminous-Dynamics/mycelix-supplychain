@@ -12,11 +12,34 @@ pub struct CreateClaimInput {
     pub claim_type: String,
     pub data: String,
     pub issuer: String,
+    pub previous_claim: Option<ActionHash>,
 }
 
-/// Create a new supply chain claim
+/// Create a new supply chain claim with provenance chain linking
 #[hdk_extern]
 pub fn create_claim(input: CreateClaimInput) -> ExternResult<Record> {
+    // Input validation
+    if input.item_id.is_empty() || input.item_id.len() > 200 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Item ID must be 1-200 characters".to_string()
+        )));
+    }
+    if input.claim_type.is_empty() || input.claim_type.len() > 100 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Claim type must be 1-100 characters".to_string()
+        )));
+    }
+    if input.data.len() > 10_000 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Claim data cannot exceed 10KB".to_string()
+        )));
+    }
+    if input.issuer.is_empty() {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Issuer is required".to_string()
+        )));
+    }
+
     let now = sys_time()?;
 
     let claim = SupplyChainClaim {
@@ -50,6 +73,24 @@ pub fn create_claim(input: CreateClaimInput) -> ExternResult<Record> {
     // Link to all claims anchor
     let all_anchor = all_claims_anchor()?;
     create_link(all_anchor, action_hash.clone(), LinkTypes::AllClaims, ())?;
+
+    // PROVENANCE CHAIN: Link to previous claim if provided
+    if let Some(prev_hash) = input.previous_claim {
+        // Verify previous claim exists
+        if get(prev_hash.clone(), GetOptions::default())?.is_none() {
+            return Err(wasm_error!(WasmErrorInner::Guest(
+                "Previous claim not found".to_string()
+            )));
+        }
+
+        // Create provenance chain link
+        create_link(
+            prev_hash,
+            action_hash.clone(),
+            LinkTypes::ClaimToVerifications,
+            (),
+        )?;
+    }
 
     get(action_hash, GetOptions::default())?.ok_or(wasm_error!(WasmErrorInner::Guest(
         "Could not retrieve created claim".to_string()
@@ -153,6 +194,80 @@ pub fn create_provider_profile(input: CreateProviderInput) -> ExternResult<Recor
 #[hdk_extern]
 pub fn get_provider_profile(hash: ActionHash) -> ExternResult<Option<Record>> {
     get(hash, GetOptions::default())
+}
+
+/// Get provenance chain for an item (all claims in chronological order)
+#[hdk_extern]
+pub fn get_item_provenance_chain(item_id: String) -> ExternResult<Vec<Record>> {
+    if item_id.is_empty() {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Item ID is required".to_string()
+        )));
+    }
+
+    let all_claims = get_claims_by_item(item_id)?;
+
+    // Sort claims by timestamp to build chronological chain
+    let mut sorted_claims: Vec<(Record, u64)> = Vec::new();
+    for claim_record in all_claims {
+        if let Some(claim) = claim_record.entry().to_app_option::<SupplyChainClaim>()
+            .map_err(|e| wasm_error!(e))? {
+            sorted_claims.push((claim_record, claim.timestamp));
+        }
+    }
+
+    sorted_claims.sort_by_key(|(_, timestamp)| *timestamp);
+    let chain: Vec<Record> = sorted_claims.into_iter().map(|(record, _)| record).collect();
+
+    Ok(chain)
+}
+
+/// Verify claim authenticity by checking issuer signature (placeholder)
+#[hdk_extern]
+pub fn verify_claim_authenticity(claim_hash: ActionHash) -> ExternResult<bool> {
+    // Verify claim exists
+    let record = get(claim_hash, GetOptions::default())?
+        .ok_or_else(|| wasm_error!(WasmErrorInner::Guest(
+            "Claim not found".to_string()
+        )))?;
+
+    // Get claim data
+    let claim: SupplyChainClaim = record.entry()
+        .to_app_option()
+        .map_err(|e| wasm_error!(e))?
+        .ok_or_else(|| wasm_error!(WasmErrorInner::Guest(
+            "Invalid claim entry".to_string()
+        )))?;
+
+    // In production, would verify signature against issuer DID
+    // For now, return true if claim has valid structure
+    Ok(!claim.issuer.is_empty() && !claim.item_id.is_empty())
+}
+
+/// Get claim with its verification records
+#[hdk_extern]
+pub fn get_claim_with_verifications(claim_hash: ActionHash) -> ExternResult<(Record, Vec<Record>)> {
+    let claim_record = get(claim_hash.clone(), GetOptions::default())?
+        .ok_or_else(|| wasm_error!(WasmErrorInner::Guest(
+            "Claim not found".to_string()
+        )))?;
+
+    // Get verification records
+    let links = get_links(
+        LinkQuery::try_new(claim_hash, LinkTypes::ClaimToVerifications)?,
+        GetStrategy::default(),
+    )?;
+
+    let mut verifications = Vec::new();
+    for link in links {
+        if let Some(hash) = link.target.into_action_hash() {
+            if let Some(verification) = get(hash, GetOptions::default())? {
+                verifications.push(verification);
+            }
+        }
+    }
+
+    Ok((claim_record, verifications))
 }
 
 // =============================================================================

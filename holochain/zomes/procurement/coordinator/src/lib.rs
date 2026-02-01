@@ -29,12 +29,35 @@ pub struct CreatePurchaseOrderInput {
 
 #[hdk_extern]
 pub fn create_purchase_order(input: CreatePurchaseOrderInput) -> ExternResult<ActionHash> {
+    // Input validation
+    if input.po_number.is_empty() || input.po_number.len() > 50 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "PO number must be 1-50 characters".to_string()
+        )));
+    }
+    if input.items.is_empty() {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "At least one item is required".to_string()
+        )));
+    }
+    if input.currency.is_empty() || input.currency.len() > 10 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Currency must be 1-10 characters".to_string()
+        )));
+    }
+
     let buyer = agent_info()?.agent_initial_pubkey;
     let now = sys_time()?;
 
     let total_amount: u64 = input.items.iter()
         .map(|item| item.quantity * item.unit_price)
         .sum();
+
+    if total_amount == 0 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Total amount must be greater than 0".to_string()
+        )));
+    }
 
     let po = PurchaseOrder {
         po_number: input.po_number,
@@ -316,4 +339,40 @@ pub fn get_quotations_for_rfq(rfq_hash: ActionHash) -> ExternResult<Vec<Quotatio
         }
     }
     Ok(quotes)
+}
+
+#[hdk_extern]
+pub fn approve_purchase_order(po_hash: ActionHash) -> ExternResult<ActionHash> {
+    update_po_status((po_hash, PurchaseOrderStatus::Approved))
+}
+
+#[hdk_extern]
+pub fn fulfill_purchase_order(po_hash: ActionHash) -> ExternResult<ActionHash> {
+    update_po_status((po_hash, PurchaseOrderStatus::Received))
+}
+
+#[hdk_extern]
+pub fn cancel_purchase_order(po_hash: ActionHash) -> ExternResult<ActionHash> {
+    update_po_status((po_hash, PurchaseOrderStatus::Cancelled))
+}
+
+#[hdk_extern]
+pub fn get_supplier_orders(supplier: AgentPubKey) -> ExternResult<Vec<PurchaseOrder>> {
+    let supplier_path = Path::from(format!("supplier_pos/{}", supplier));
+    let typed_path = supplier_path.typed(LinkTypes::SupplierToPurchaseOrders)?;
+    let filter = LinkTypeFilter::try_from(LinkTypes::SupplierToPurchaseOrders)?;
+    let links = get_links(
+        LinkQuery::new(typed_path.path_entry_hash()?, filter),
+        GetStrategy::default(),
+    )?;
+
+    let mut orders = Vec::new();
+    for link in links {
+        if let Some(action_hash) = link.target.into_action_hash() {
+            if let Some(po) = get_purchase_order(action_hash)? {
+                orders.push(po);
+            }
+        }
+    }
+    Ok(orders)
 }

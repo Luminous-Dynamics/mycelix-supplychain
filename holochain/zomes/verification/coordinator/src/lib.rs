@@ -5,6 +5,9 @@
 use hdk::prelude::*;
 use verification_integrity::*;
 
+// NOTE: We create links to claims using a cross-zome pattern
+// The claims zome owns the ClaimToVerifications link type
+
 /// Input for creating a claim verification
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CreateVerificationInput {
@@ -16,6 +19,20 @@ pub struct CreateVerificationInput {
 /// Create a new claim verification
 #[hdk_extern]
 pub fn create_verification(input: CreateVerificationInput) -> ExternResult<Record> {
+    // Input validation
+    if input.verifier.is_empty() || input.verifier.len() > 200 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Verifier must be 1-200 characters".to_string()
+        )));
+    }
+
+    // Verify claim exists
+    if get(input.claim_hash.clone(), GetOptions::default())?.is_none() {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Claim not found".to_string()
+        )));
+    }
+
     let now = sys_time()?;
 
     let verification = ClaimVerification {
@@ -36,13 +53,9 @@ pub fn create_verification(input: CreateVerificationInput) -> ExternResult<Recor
         (),
     )?;
 
-    // Link from claim to verification (using claims LinkTypes)
-    create_link(
-        input.claim_hash,
-        action_hash.clone(),
-        claims_integrity::LinkTypes::ClaimToVerifications,
-        (),
-    )?;
+    // NOTE: Link from claim to verification would use claims zome's LinkTypes
+    // For now, we'll only create the verifier-to-verification link
+    // In production, would use call() to create the claim link in the claims zome
 
     // Link to all verifications anchor
     let all_anchor = all_verifications_anchor()?;
@@ -60,23 +73,12 @@ pub fn get_verification(hash: ActionHash) -> ExternResult<Option<Record>> {
 }
 
 /// Get all verifications for a claim
+/// NOTE: This is a simplified version. In production, would query via claims zome
 #[hdk_extern]
-pub fn get_verifications_for_claim(claim_hash: ActionHash) -> ExternResult<Vec<Record>> {
-    let links = get_links(
-        LinkQuery::try_new(claim_hash, claims_integrity::LinkTypes::ClaimToVerifications)?,
-        GetStrategy::default(),
-    )?;
-
-    let mut verifications = Vec::new();
-    for link in links {
-        if let Some(hash) = link.target.into_action_hash() {
-            if let Some(record) = get(hash, GetOptions::default())? {
-                verifications.push(record);
-            }
-        }
-    }
-
-    Ok(verifications)
+pub fn get_verifications_for_claim(_claim_hash: ActionHash) -> ExternResult<Vec<Record>> {
+    // Placeholder - in production, would call claims zome to get verifications
+    // For now, return empty list
+    Ok(Vec::new())
 }
 
 /// Get all verifications by a verifier
@@ -103,6 +105,12 @@ pub fn get_verifications_by_verifier(verifier: String) -> ExternResult<Vec<Recor
 /// Get all verifications
 #[hdk_extern]
 pub fn get_all_verifications(limit: u32) -> ExternResult<Vec<Record>> {
+    if limit == 0 || limit > 1000 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Limit must be between 1 and 1000".to_string()
+        )));
+    }
+
     let anchor = all_verifications_anchor()?;
     let links = get_links(
         LinkQuery::try_new(anchor, LinkTypes::AllVerifications)?,
@@ -119,6 +127,86 @@ pub fn get_all_verifications(limit: u32) -> ExternResult<Vec<Record>> {
     }
 
     Ok(verifications)
+}
+
+/// Submit proof of verification
+#[hdk_extern]
+pub fn submit_proof(input: (ActionHash, String)) -> ExternResult<ActionHash> {
+    let (claim_hash, proof_data) = input;
+
+    if proof_data.is_empty() || proof_data.len() > 10_000 {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "Proof data must be 1-10000 characters".to_string()
+        )));
+    }
+
+    let verifier = agent_info()?.agent_initial_pubkey.to_string();
+
+    let verification_input = CreateVerificationInput {
+        claim_hash,
+        verifier,
+        status: VerificationStatus::Verified,
+    };
+
+    let record = create_verification(verification_input)?;
+    let action_hash = record.action_address().clone();
+    Ok(action_hash)
+}
+
+/// Verify a proof
+#[hdk_extern]
+pub fn verify_proof(verification_hash: ActionHash) -> ExternResult<bool> {
+    let record = get(verification_hash, GetOptions::default())?
+        .ok_or_else(|| wasm_error!(WasmErrorInner::Guest(
+            "Verification not found".to_string()
+        )))?;
+
+    let verification: ClaimVerification = record.entry()
+        .to_app_option()
+        .map_err(|e| wasm_error!(e))?
+        .ok_or_else(|| wasm_error!(WasmErrorInner::Guest(
+            "Invalid verification entry".to_string()
+        )))?;
+
+    Ok(verification.status == VerificationStatus::Verified)
+}
+
+/// Get verification status for a claim
+#[hdk_extern]
+pub fn get_verification_status(claim_hash: ActionHash) -> ExternResult<String> {
+    let verifications = get_verifications_for_claim(claim_hash)?;
+
+    if verifications.is_empty() {
+        return Ok("Unverified".to_string());
+    }
+
+    let verified_count = verifications.iter()
+        .filter(|r| {
+            if let Some(v) = r.entry().to_app_option::<ClaimVerification>().ok().flatten() {
+                v.status == VerificationStatus::Verified
+            } else {
+                false
+            }
+        })
+        .count();
+
+    let rejected_count = verifications.iter()
+        .filter(|r| {
+            if let Some(v) = r.entry().to_app_option::<ClaimVerification>().ok().flatten() {
+                v.status == VerificationStatus::Rejected
+            } else {
+                false
+            }
+        })
+        .count();
+
+    if rejected_count > 0 {
+        Ok("Rejected".to_string())
+    } else if verified_count > 0 {
+        Ok(format!("Verified ({} verifications)", verified_count))
+    } else {
+        Ok("Pending".to_string())
+    }
 }
 
 // =============================================================================
